@@ -2,15 +2,15 @@
 
 When you are running heavy loaded networking application you need to rely on high performances software design to distribute the load. In late 2009, Tom Herbert makes it happen by introducing software Receive Packet Steering (RPS) to distribute load across multiple processors. In 2010, he introduced Receive Flow Steering (RFS) for distributing load at socket layer. Finally in 2013, he introduced SO_REUSEPORT socket option to fully benefit RFS for UDP & TCP sockets.
 
-Concretely, modern Linux networking applications are spawning multiple pthread, potentially bound to a specific CPU, and create AF_INET(6) UDP or TCP protocol listener via socket API. Using SO_REUSEPORT socket option one pthread is able to listen on a UDP or TCP port on which another socket is already bound to. This simple syscall enable access to ingress packet distributed load.
+Concretely, modern Linux networking applications are spawning multiple pthread, potentially bound to a specific CPU, and create AF_INET(6) UDP or TCP protocol listener via socket API. Using SO_REUSEPORT socket option one socket can listen on a UDP or TCP port on which another socket is already bound to. This simple syscall enable access to ingress packet load balancing.
 
-Unfortunately this nice design is not available for PF_PACKET sockets, simply because RFS is hashing layer3+layer4 headers elements to steer packet across AF_INET(6) sockets. PF_SOCKET are low-level hook in Linux kernel mainly used for applications like tcpdump to watch traffic. When an application create multiple sockets via _socket(PF_PACKET, SOCK_RAW, proto)_ then each socket will receive a copy of every packets matching _proto_. This built-in feature enable you to run multiple tcpdump on the same host, and then application need to filter out unrelated traffic. This is where BPF took place, providing a set of instructions to create filter to attach to the socket to only grab pieces of interest.
+Unfortunately this nice design is not available for PF_PACKET sockets, simply because RFS is hashing layer3+layer4 headers elements to steer packet across AF_INET(6) sockets. PF_SOCKET are low-level hook in the Linux kernel mostly used by applications like tcpdump to watch traffic. When an application creates multiple sockets via _socket(PF_PACKET, SOCK_RAW, proto)_ then each socket will receive a copy of every packets matching _proto_. This built-in copy feature enable you to run multiple tcpdump on the same host, and then application need to filter out unrelated traffic. This is where BPF took place, providing a set of instructions to create filter to attach onto the socket to only grab pieces of interest.
 
-Considering a layer2 application like an ethernet access-concentrator (BNG) or any other application on top of layer2. One simple design could be to create a PF_PACKET socket and re-distribute incoming packets across multiple pthread. This design introduce the need for synchronisation to feed each pthread processing queue which increase complexity of the application and create a bottleneck at this single ingress socket.
+Considering a layer2 application like an ethernet access-concentrator (BNG) or any other application on top of layer2. One simple design could be to create a PF_PACKET socket and re-distribute incoming packets across multiple pthread. This design introduce the need for synchronisation to feed each pthread processing queue which increase complexity of the application and create a bottleneck with this single ingress socket.
 
-The proposed design here is an attempt to simplify application code and use the same design as RPS/RFS but for PF_PACKET socket to increase perfomances. An ethernet layer2 application will be offered as a PoC. Application will simply create multiple PF_PACKET sockets and process packet without any synchronisation needed by attaching an eBPF program filtering packet based on hashing ethernet source address.
+The proposed design here is an attempt to simplify application code complexity and increase performances by using the same design as RPS/RFS but applied to PF_PACKET sockets. An ethernet layer2 application will be offered as a PoC. Application will simply create multiple PF_PACKET sockets and process packet without any synchronisation needed by attaching an eBPF program filtering packet based on hashing ethernet source address.
 
-This is a PoC code as an experiment candidate to be integrated into GTP-Guard.
+This PoC code is an experiment candidate to be merged into GTP-Guard.
 
 ## Network topology
 
@@ -19,7 +19,7 @@ Proposed application will apply to following topology built with qemu :
 ```
     -----------+-----------------------+----------------------
                | eno1                  | enp1s0
-               | (MAC: ramdom)         | (MAC: 52:54:00:84:d7:ff)
+               | (MAC: random)         | (MAC: 52:54:00:84:d7:ff)
           +----+-----+              +--+---+
           | injector |              | node |
           +----------+              +------+
@@ -46,11 +46,11 @@ _injector_ will run `inject` and _node_ will run `bpf_pfpacket_rps + bpf_rps.bpf
 
 ## Application discussion : _injector_
 
-This application is forging simple PPPoE packets. It uses source ethernet address as specified via command line and destination ethernet address is built randomly.
+This application is forging simple PPPoE packets. It uses destination ethernet address as specified via command line and source ethernet address is randomly generated.
 
 ## Application discussion : _bpf_pfpacket_rps_
 
-This application spawn n pthread worker. Each worker creates one PF_PACKET socket and attach `bpf_rps.bpf` program to it. Each worker have its own uniq id, monotonically incremented. `bpf_rps.bpf` is exposing a _BPF_MAP_TYPE_ARRAY_ used as local options set by worker to identify its id, max_number_of_worker & hash_algo. This eBPF program will then perform a hash over ingress packet ethernet source address which will lead to PASSING or DROPING the packet according to local id match.
+This application spawn n pthread worker. Each worker creates one PF_PACKET socket and attach `bpf_rps.bpf` program to it. Each worker have its own uniq id, monotonically incremented. `bpf_rps.bpf` is exposing a _BPF_MAP_TYPE_ARRAY_ used as local options set by worker to identify its id, max_number_of_worker & hash_algo. This eBPF program will then perform a hash over source ethernet address of ingress packet leading to PASSING or DROPPING decision according to local id matching.
 
 ## Give it a try : _injector_ side
 ```
@@ -81,7 +81,7 @@ $ sudo ./bpf_pfpacket_rps -i enp1s0 -b ./bpf_rps.bpf -w 8
 #0:3165 #1:3155 #2:3061 #3:3157 #4:3123 #5:3109 #6:3116 #7:3114 (total:25000 std_dev:31.784430)
 ```
 
-Default hash algorithm used is 0, every second application is displaying processing distribution stats calculation standard deviation to evaluate hash algorithm.
+Default hash algorithm used is 0. Every second application is displaying packet distribution over workers. Standard deviation is calculated to evaluate hash algorithm accuracy.
 
 Enjoy,
 Alexandre
